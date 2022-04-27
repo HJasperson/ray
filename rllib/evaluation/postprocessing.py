@@ -96,7 +96,7 @@ def compute_advantages(
 
     assert (
         SampleBatch.VF_PREDS in rollout or not use_critic
-    ), "use_critic=True but values not found"
+    ), "use_critic=True but values not found, rollout: {}".format(rollout)
     assert use_critic or not use_gae, "Can't use gae without using a value function"
 
     if use_gae:
@@ -164,7 +164,7 @@ def compute_gae_for_sample_batch(
     """
 
     # Trajectory is actually complete -> last r=0.0.
-    if sample_batch[SampleBatch.DONES][-1]:
+    if isinstance(sample_batch[SampleBatch.DONES],dict) and sample_batch[SampleBatch.DONES]["__all__"]:
         last_r = 0.0
     # Trajectory has been truncated -> last r=VF estimate of last obs.
     else:

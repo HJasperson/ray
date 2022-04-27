@@ -204,6 +204,7 @@ class SampleBatch(dict):
             >>> print(SampleBatch.concat_samples([b1, b2]))
             {"a": np.array([1, 2, 3]), "b": np.array([10, 11, 12])}
         """
+
         if any(isinstance(s, MultiAgentBatch) for s in samples):
             return MultiAgentBatch.concat_samples(samples)
         concatd_seq_lens = []
@@ -1231,6 +1232,7 @@ class MultiAgentBatch:
         Returns:
             A new MultiAgentBatch consisting of the concatenated inputs.
         """
+
         policy_batches = collections.defaultdict(list)
         env_steps = 0
         for s in samples:

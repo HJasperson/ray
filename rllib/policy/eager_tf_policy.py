@@ -26,7 +26,8 @@ from ray.rllib.utils.spaces.space_utils import normalize_action
 from ray.rllib.utils.tf_utils import get_gpu_devices
 from ray.rllib.utils.threading import with_lock
 from ray.rllib.utils.typing import LocalOptimizer, ModelGradients, TensorType
-
+import traceback
+import numpy as np
 tf1, tf, tfv = try_import_tf()
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 def _convert_to_tf(x, dtype=None):
     if isinstance(x, SampleBatch):
         dict_ = {k: v for k, v in x.items() if k != SampleBatch.INFOS}
+        dict_['is_training'] = x.is_training
+        dict_['action_dist_inputs'] = np.stack(dict_['action_dist_inputs'])
         return tf.nest.map_structure(_convert_to_tf, dict_)
     elif isinstance(x, Policy):
         return x
@@ -303,7 +306,7 @@ def build_eager_tf_policy(
         compute_gradients_fn = gradients_fn
 
     class eager_policy_cls(base):
-        def __init__(self, observation_space, action_space, config):
+        def __init__(self, observation_space, action_space, config, initialize_loss=False):
             # If this class runs as a @ray.remote actor, eager mode may not
             # have been activated yet.
             if not tf1.executing_eagerly():
@@ -484,6 +487,7 @@ def build_eager_tf_policy(
                 explore,
                 timestep,
             )
+
             # Update our global timestep by the batch size.
             self.global_timestep += int(tree.flatten(ret[0])[0].shape[0])
             return convert_to_numpy(ret)
@@ -573,7 +577,7 @@ def build_eager_tf_policy(
                 dist_inputs, _ = self.model(input_batch, state_batches, seq_lens)
                 dist_class = self.dist_class
 
-            action_dist = dist_class(dist_inputs, self.model)
+            action_dist = dist_class(dist_inputs, self.model, input_batch['env_id'])
 
             # Normalize actions if necessary.
             if not actions_normalized and self.config["normalize_actions"]:
@@ -750,6 +754,7 @@ def build_eager_tf_policy(
             # Calculate RNN sequence lengths.
             batch_size = tree.flatten(input_dict[SampleBatch.OBS])[0].shape[0]
             seq_lens = tf.ones(batch_size, dtype=tf.int32) if state_batches else None
+                                                        
 
             # Add default and custom fetches.
             extra_fetches = {}
@@ -820,7 +825,7 @@ def build_eager_tf_policy(
                             input_dict, state_batches, seq_lens
                         )
 
-                    action_dist = self.dist_class(dist_inputs, self.model)
+                    action_dist = self.dist_class(dist_inputs, self.model, input_dict['env_id'])
 
                     # Get the exploration action from the forward results.
                     actions, logp = self.exploration.get_exploration_action(
@@ -955,6 +960,7 @@ def build_eager_tf_policy(
                 fetches.update({k: v for k, v in extra_learn_fetches_fn(self).items()})
             if grad_stats_fn:
                 fetches.update(
+                                                                   
                     {k: v for k, v in grad_stats_fn(self, samples, grads).items()}
                 )
             return fetches

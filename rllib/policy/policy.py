@@ -863,7 +863,7 @@ class Policy(metaclass=ABCMeta):
     def _initialize_loss_from_dummy_batch(
         self,
         auto_remove_unneeded_view_reqs: bool = True,
-        stats_fn=None,
+        stats_fn=None, initialize_loss=False,
     ) -> None:
         """Performs test calls through policy's model and loss.
 
@@ -889,37 +889,47 @@ class Policy(metaclass=ABCMeta):
         # loss) such that we can then adjust our view requirements.
         self._no_tracing = True
 
-        sample_batch_size = max(self.batch_divisibility_req * 4, 32)
+        sample_batch_size = max(self.batch_divisibility_req * 4, 3)
         self._dummy_batch = self._get_dummy_batch_from_view_requirements(
             sample_batch_size
         )
         self._lazy_tensor_dict(self._dummy_batch)
-        actions, state_outs, extra_outs = self.compute_actions_from_input_dict(
-            self._dummy_batch, explore=False
-        )
-        for key, view_req in self.view_requirements.items():
-            if key not in self._dummy_batch.accessed_keys:
-                view_req.used_for_compute_actions = False
-        # Add all extra action outputs to view reqirements (these may be
-        # filtered out later again, if not needed for postprocessing or loss).
-        for key, value in extra_outs.items():
-            self._dummy_batch[key] = value
-            if key not in self.view_requirements:
-                self.view_requirements[key] = ViewRequirement(
-                    space=gym.spaces.Box(
-                        -1.0, 1.0, shape=value.shape[1:], dtype=value.dtype
-                    ),
-                    used_for_compute_actions=False,
-                )
-        for key in self._dummy_batch.accessed_keys:
-            if key not in self.view_requirements:
-                self.view_requirements[key] = ViewRequirement()
-            self.view_requirements[key].used_for_compute_actions = True
+        if initialize_loss:                                       
+            actions, state_outs, extra_outs = self.compute_actions_from_input_dict(
+                self._dummy_batch, explore=False
+            )
+            for key, view_req in self.view_requirements.items():
+                if key not in self._dummy_batch.accessed_keys:
+                    view_req.used_for_compute_actions = False
+            # Add all extra action outputs to view reqirements (these may be
+            # filtered out later again, if not needed for postprocessing or loss).
+            for key, value in extra_outs.items():
+                self._dummy_batch[key] = value
+                if key not in self.view_requirements:
+                    self.view_requirements[key] = ViewRequirement(
+                        space=gym.spaces.Box(
+                            -1.0, 1.0, shape=value.shape[1:], dtype=value.dtype
+                        ),
+                        used_for_compute_actions=False,
+                    )
+            for key in self._dummy_batch.accessed_keys:
+                if key not in self.view_requirements:
+                    self.view_requirements[key] = ViewRequirement()
+                self.view_requirements[key].used_for_compute_actions = True
+        else:
+            state_outs = False
+            reqKeys = ['vf_preds', 'action_prob', 'action_logp', 'action_dist_inputs']
+            for key in reqKeys:
+                if key not in self.view_requirements:
+                    self.view_requirements[key] = ViewRequirement()
+                self.view_requirements[key].used_for_compute_actions = True
+
         self._dummy_batch = self._get_dummy_batch_from_view_requirements(
             sample_batch_size
         )
         self._dummy_batch.set_get_interceptor(None)
         self.exploration.postprocess_trajectory(self, self._dummy_batch)
+        self._dummy_batch[SampleBatch.VF_PREDS] = np.zeros(sample_batch_size)                                                                     
         postprocessed_batch = self.postprocess_trajectory(self._dummy_batch)
         seq_lens = None
         if state_outs:
@@ -945,17 +955,17 @@ class Policy(metaclass=ABCMeta):
             train_batch[SampleBatch.SEQ_LENS] = seq_lens
         train_batch.count = self._dummy_batch.count
         # Call the loss function, if it exists.
-        if self._loss is not None:
+        if self._loss is not None and initialize_loss:
             self._loss(self, self.model, self.dist_class, train_batch)
-        # Call the stats fn, if given.
-        if stats_fn is not None:
-            stats_fn(self, train_batch)
+            # Call the stats fn, if given.
+            if stats_fn is not None:
+                stats_fn(self, train_batch)
 
         # Re-enable tracing.
         self._no_tracing = False
 
         # Add new columns automatically to view-reqs.
-        if auto_remove_unneeded_view_reqs:
+        if auto_remove_unneeded_view_reqs and initialize_loss:
             # Add those needed for postprocessing and training.
             all_accessed_keys = (
                 train_batch.accessed_keys

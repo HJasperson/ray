@@ -65,7 +65,7 @@ def ppo_surrogate_loss(
         logits, state = model(train_batch)
         value_fn_out = model.value_function()
 
-    curr_action_dist = dist_class(logits, model)
+    curr_action_dist = dist_class(logits, model, train_batch['env_id'])
 
     # RNN case: Mask away 0-padded chunks at end of time axis.
     if state:
@@ -86,8 +86,6 @@ def ppo_surrogate_loss(
         mask = None
         reduce_mean_valid = tf.reduce_mean
 
-    prev_action_dist = dist_class(train_batch[SampleBatch.ACTION_DIST_INPUTS], model)
-
     logp_ratio = tf.exp(
         curr_action_dist.logp(train_batch[SampleBatch.ACTIONS])
         - train_batch[SampleBatch.ACTION_LOGP]
@@ -95,6 +93,8 @@ def ppo_surrogate_loss(
 
     # Only calculate kl loss if necessary (kl-coeff > 0.0).
     if policy.config["kl_coeff"] > 0.0:
+        prev_action_dist = dist_class(train_batch[SampleBatch.ACTION_DIST_INPUTS], model, train_batch['env_id'])
+        _ = prev_action_dist.autoPrep(False, train_batch[SampleBatch.ACTIONS])  # need to set self.logits
         action_kl = prev_action_dist.kl(curr_action_dist)
         mean_kl_loss = reduce_mean_valid(action_kl)
     else:
@@ -194,9 +194,10 @@ def vf_preds_fetches(policy: Policy) -> Dict[str, TensorType]:
     # Return value function outputs. VF estimates will hence be added to the
     # SampleBatches produced by the sampler(s) to generate the train batches
     # going into the loss function.
-    return {
+    ret = {
         SampleBatch.VF_PREDS: policy.model.value_function(),
     }
+    return ret
 
 
 def compute_and_clip_gradients(
@@ -339,7 +340,8 @@ class ValueNetworkMixin:
                 else:
                     model_out, _ = self.model(input_dict)
                     # [0] = remove the batch dim.
-                    return self.model.value_function()[0]
+                    out = self.model.value_function()[0]
+                    return out
 
         # When not doing GAE, we do not require the value function's output.
         else:

@@ -245,7 +245,7 @@ def build_policy_class(
     base = add_mixins(parent_cls, mixins)
 
     class policy_cls(base):
-        def __init__(self, obs_space, action_space, config):
+        def __init__(self, obs_space, action_space, config, initialize_loss=False):
             # Set up the config from possible default-config fn and given
             # config arg.
             if get_default_config:
@@ -326,6 +326,7 @@ def build_policy_class(
             self._initialize_loss_from_dummy_batch(
                 auto_remove_unneeded_view_reqs=True,
                 stats_fn=None if self.config["in_evaluation"] else stats_fn,
+				initialize_loss=initialize_loss
             )
 
             if _after_loss_init:

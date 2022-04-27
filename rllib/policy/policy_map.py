@@ -92,7 +92,7 @@ class PolicyMap(dict):
         observation_space: gym.Space,
         action_space: gym.Space,
         config_override: PartialTrainerConfigDict,
-        merged_config: TrainerConfigDict,
+        merged_config: TrainerConfigDict, initialize_loss=False
     ) -> None:
         """Creates a new policy and stores it to the cache.
 
@@ -149,7 +149,7 @@ class PolicyMap(dict):
         # Non-tf: No graph, no session.
         else:
             class_ = policy_cls
-            self[policy_id] = class_(observation_space, action_space, merged_config)
+            self[policy_id] = class_(observation_space, action_space, merged_config, initialize_loss)
 
         # Store spec (class, obs-space, act-space, and config overrides) such
         # that the map will be able to reproduce on-the-fly added policies
