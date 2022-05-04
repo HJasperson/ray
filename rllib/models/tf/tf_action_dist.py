@@ -88,7 +88,8 @@ class Categorical(TFActionDistribution):
 
     @override(TFActionDistribution)
     def _build_sample_op(self) -> TensorType:
-        return tf.squeeze(tf.random.categorical(tf.math.log(tf.nn.softmax(tf.where(tf.not_equal(self.inputs,0), self.inputs, tf.float64.min))), 1), axis=1)
+        logp = tf.math.log(tf.nn.softmax(tf.where(tf.not_equal(self.inputs,0), self.inputs, tf.float64.min)))
+        return tf.squeeze(tf.random.categorical(logp, 1), axis=1)
 
     @staticmethod
     @override(ActionDistribution)
