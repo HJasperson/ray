@@ -666,7 +666,7 @@ class RolloutWorker(ParallelIteratorWorker):
         return batch, batch.count
 
     @DeveloperAPI
-    def _batch(self, samples: SampleBatchType) -> Dict:
+    def learn_on_batch(self, samples: SampleBatchType) -> Dict:
         """Update policies based on the given batch.
 
         This is the equivalent to apply_gradients(compute_gradients(samples)),
