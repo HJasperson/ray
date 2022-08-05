@@ -26,18 +26,8 @@ class EpsilonGreedy(Exploration):
     uses the model-computed one (if rand(1) >= eps).
     """
 
-    def __init__(
-        self,
-        action_space: gym.spaces.Space,
-        *,
-        framework: str,
-        initial_epsilon: float = 1.0,
-        final_epsilon: float = 0.05,
-        warmup_timesteps: int = 0,
-        epsilon_timesteps: int = int(1e5),
-        epsilon_schedule: Optional[Schedule] = None,
-        **kwargs,
-    ):
+    def __init__(self, action_space: gym.spaces.Space, *, framework: str, initial_epsilon: float = 1.0, final_epsilon: float = 0.05,
+            warmup_timesteps: int = 0, epsilon_timesteps: int = int(1e5), epsilon_schedule: Optional[Schedule] = None, **kwargs, ):
         """Create an EpsilonGreedy exploration class.
 
         Args:
@@ -57,54 +47,28 @@ class EpsilonGreedy(Exploration):
         assert framework is not None
         super().__init__(action_space=action_space, framework=framework, **kwargs)
 
-        self.epsilon_schedule = from_config(
-            Schedule, epsilon_schedule, framework=framework
-        ) or PiecewiseSchedule(
-            endpoints=[
-                (0, initial_epsilon),
-                (warmup_timesteps, initial_epsilon),
-                (warmup_timesteps + epsilon_timesteps, final_epsilon),
-            ],
-            outside_value=final_epsilon,
-            framework=self.framework,
-        )
+        self.epsilon_schedule = from_config(Schedule, epsilon_schedule, framework=framework) or PiecewiseSchedule(
+            endpoints=[(0, initial_epsilon), (warmup_timesteps, initial_epsilon), (warmup_timesteps + epsilon_timesteps, final_epsilon), ],
+            outside_value=final_epsilon, framework=self.framework, )
 
         # The current timestep value (tf-var or python int).
-        self.last_timestep = get_variable(
-            np.array(0, np.int64),
-            framework=framework,
-            tf_name="timestep",
-            dtype=np.int64,
-        )
+        self.last_timestep = get_variable(np.array(0, np.int64), framework=framework, tf_name="timestep", dtype=np.int64, )
 
         # Build the tf-info-op.
         if self.framework == "tf":
             self._tf_state_op = self.get_state()
 
     @override(Exploration)
-    def get_exploration_action(
-        self,
-        *,
-        action_distribution: ActionDistribution,
-        timestep: Union[int, TensorType],
-        explore: Optional[Union[bool, TensorType]] = True,
-    ):
+    def get_exploration_action(self, *, action_distribution: ActionDistribution, timestep: Union[int, TensorType],
+            explore: Optional[Union[bool, TensorType]] = True, ):
 
         if self.framework in ["tf2", "tf", "tfe"]:
-            return self._get_tf_exploration_action_op(
-                action_distribution, explore, timestep
-            )
+            return self._get_tf_exploration_action_op(action_distribution, explore, timestep)
         else:
-            return self._get_torch_exploration_action(
-                action_distribution, explore, timestep
-            )
+            return self._get_torch_exploration_action(action_distribution, explore, timestep)
 
-    def _get_tf_exploration_action_op(
-        self,
-        action_distribution: ActionDistribution,
-        explore: Union[bool, TensorType],
-        timestep: Union[int, TensorType],
-    ) -> "tf.Tensor":
+    def _get_tf_exploration_action_op(self, action_distribution: ActionDistribution, explore: Union[bool, TensorType],
+            timestep: Union[int, TensorType], ) -> "tf.Tensor":
         """TF method to produce the tf op for an epsilon exploration action.
 
         Args:
@@ -112,43 +76,21 @@ class EpsilonGreedy(Exploration):
                 to work with when creating exploration actions.
 
         Returns:
-            The tf exploration-action op.
+            The tf exploration-action op. (action, logp)
         """
         # TODO: Support MultiActionDistr for tf.
-        q_values = action_distribution.inputs
-        epsilon = self.epsilon_schedule(
-            timestep if timestep is not None else self.last_timestep
-        )
+        q_values = action_distribution.inputs   # only used for shape, so we don't need to bother with updated logits
+        epsilon = self.epsilon_schedule(timestep if timestep is not None else self.last_timestep)
 
         # Get the exploit action as the one with the highest logit value.
-        exploit_action = tf.argmax(q_values, axis=1)
-
+        exploit_action = action_distribution.deterministic_sample()
         batch_size = tf.shape(q_values)[0]
-        # Mask out actions with q-value=-inf so that we don't even consider
-        # them for exploration.
-        random_valid_action_logits = tf.where(
-            tf.equal(q_values, tf.float32.min),
-            tf.ones_like(q_values) * tf.float32.min,
-            tf.ones_like(q_values),
-        )
-        random_actions = tf.squeeze(
-            tf.random.categorical(random_valid_action_logits, 1), axis=1
-        )
+        random_actions = action_distribution.sample()
 
-        chose_random = (
-            tf.random.uniform(
-                tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32
-            )
-            < epsilon
-        )
+        chose_random = (tf.random.uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < epsilon)
 
-        action = tf.cond(
-            pred=tf.constant(explore, dtype=tf.bool)
-            if isinstance(explore, bool)
-            else explore,
-            true_fn=(lambda: tf.where(chose_random, random_actions, exploit_action)),
-            false_fn=lambda: exploit_action,
-        )
+        action = tf.cond(pred=tf.constant(explore, dtype=tf.bool) if isinstance(explore, bool) else explore,
+            true_fn=(lambda: tf.where(chose_random, random_actions, exploit_action)), false_fn=lambda: exploit_action, )
 
         if self.framework in ["tf2", "tfe"] and not self.policy_config["eager_tracing"]:
             self.last_timestep = timestep
@@ -158,12 +100,8 @@ class EpsilonGreedy(Exploration):
             with tf1.control_dependencies([assign_op]):
                 return action, tf.zeros_like(action, dtype=tf.float32)
 
-    def _get_torch_exploration_action(
-        self,
-        action_distribution: ActionDistribution,
-        explore: bool,
-        timestep: Union[int, TensorType],
-    ) -> "torch.Tensor":
+    def _get_torch_exploration_action(self, action_distribution: ActionDistribution, explore: bool,
+            timestep: Union[int, TensorType], ) -> "torch.Tensor":
         """Torch method to produce an epsilon exploration action.
 
         Args:
@@ -192,31 +130,19 @@ class EpsilonGreedy(Exploration):
                         random_action = tree.flatten(self.action_space.sample())
                         for j in range(len(exploit_action)):
                             exploit_action[j][i] = torch.tensor(random_action[j])
-                exploit_action = tree.unflatten_as(
-                    action_distribution.action_space_struct, exploit_action
-                )
+                exploit_action = tree.unflatten_as(action_distribution.action_space_struct, exploit_action)
 
                 return exploit_action, action_logp
 
             else:
                 # Mask out actions, whose Q-values are -inf, so that we don't
                 # even consider them for exploration.
-                random_valid_action_logits = torch.where(
-                    q_values <= FLOAT_MIN,
-                    torch.ones_like(q_values) * 0.0,
-                    torch.ones_like(q_values),
-                )
+                random_valid_action_logits = torch.where(q_values <= FLOAT_MIN, torch.ones_like(q_values) * 0.0, torch.ones_like(q_values), )
                 # A random action.
-                random_actions = torch.squeeze(
-                    torch.multinomial(random_valid_action_logits, 1), axis=1
-                )
+                random_actions = torch.squeeze(torch.multinomial(random_valid_action_logits, 1), axis=1)
 
                 # Pick either random or greedy.
-                action = torch.where(
-                    torch.empty((batch_size,)).uniform_().to(self.device) < epsilon,
-                    random_actions,
-                    exploit_action,
-                )
+                action = torch.where(torch.empty((batch_size,)).uniform_().to(self.device) < epsilon, random_actions, exploit_action, )
 
                 return action, action_logp
         # Return the deterministic "sample" (argmax) over the logits.
@@ -228,12 +154,8 @@ class EpsilonGreedy(Exploration):
         if sess:
             return sess.run(self._tf_state_op)
         eps = self.epsilon_schedule(self.last_timestep)
-        return {
-            "cur_epsilon": convert_to_numpy(eps) if self.framework != "tf" else eps,
-            "last_timestep": convert_to_numpy(self.last_timestep)
-            if self.framework != "tf"
-            else self.last_timestep,
-        }
+        return {"cur_epsilon": convert_to_numpy(eps) if self.framework != "tf" else eps,
+            "last_timestep": convert_to_numpy(self.last_timestep) if self.framework != "tf" else self.last_timestep, }
 
     @override(Exploration)
     def set_state(self, state: dict, sess: Optional["tf.Session"] = None) -> None:

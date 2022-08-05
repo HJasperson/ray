@@ -151,7 +151,7 @@ class WorkerSet:
                 except Exception:
                     pass
 
-                logger.info(
+                logger.debug(
                     "Inferred observation/action spaces from remote "
                     f"worker (local worker has no env): {spaces}"
                 )

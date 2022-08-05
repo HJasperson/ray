@@ -1,12 +1,18 @@
 import numpy as np
 import scipy.signal
 from typing import Dict, Optional
+import logging
 
 from ray.rllib.evaluation.episode import Episode
 from ray.rllib.policy.policy import Policy
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.annotations import DeveloperAPI
 from ray.rllib.utils.typing import AgentID
+from ray.rllib.utils.framework import try_import_tf
+
+tf1, tf, tfv = try_import_tf()
+
+logger = logging.getLogger(__name__)
 
 
 class Postprocessing:
@@ -39,46 +45,26 @@ def adjust_nstep(n_step: int, gamma: float, batch: SampleBatch) -> None:
         4: o4 r4 d4 o4'=o5
     """
 
-    assert not any(
-        batch[SampleBatch.DONES][:-1]
-    ), "Unexpected done in middle of trajectory!"
+    assert not any(batch[SampleBatch.DONES][:-1]), "Unexpected done in middle of trajectory!"
 
     len_ = len(batch)
 
     # Shift NEXT_OBS and DONES.
-    batch[SampleBatch.NEXT_OBS] = np.concatenate(
-        [
-            batch[SampleBatch.OBS][n_step:],
-            np.stack([batch[SampleBatch.NEXT_OBS][-1]] * min(n_step, len_)),
-        ],
-        axis=0,
-    )
-    batch[SampleBatch.DONES] = np.concatenate(
-        [
-            batch[SampleBatch.DONES][n_step - 1 :],
-            np.tile(batch[SampleBatch.DONES][-1], min(n_step - 1, len_)),
-        ],
-        axis=0,
-    )
+    batch[SampleBatch.NEXT_OBS] = np.concatenate([batch[SampleBatch.OBS][n_step:], np.stack([batch[SampleBatch.NEXT_OBS][-1]] * min(n_step, len_)), ],
+        axis=0, )
+    batch[SampleBatch.DONES] = np.concatenate([batch[SampleBatch.DONES][n_step - 1:], np.tile(batch[SampleBatch.DONES][-1], min(n_step - 1, len_)), ],
+        axis=0, )
 
     # Change rewards in place.
     for i in range(len_):
         for j in range(1, n_step):
             if i + j < len_:
-                batch[SampleBatch.REWARDS][i] += (
-                    gamma ** j * batch[SampleBatch.REWARDS][i + j]
-                )
+                batch[SampleBatch.REWARDS][i] += (gamma ** j * batch[SampleBatch.REWARDS][i + j])
 
 
 @DeveloperAPI
-def compute_advantages(
-    rollout: SampleBatch,
-    last_r: float,
-    gamma: float = 0.9,
-    lambda_: float = 1.0,
-    use_gae: bool = True,
-    use_critic: bool = True,
-):
+def compute_advantages(rollout: SampleBatch, last_r: float, gamma: float = 0.9, lambda_: float = 1.0, use_gae: bool = True,
+        use_critic: bool = True, ):
     """Given a rollout, compute its value targets and the advantages.
 
     Args:
@@ -94,9 +80,7 @@ def compute_advantages(
         SampleBatch with experience from rollout and processed rewards.
     """
 
-    assert (
-        SampleBatch.VF_PREDS in rollout or not use_critic
-    ), "use_critic=True but values not found, rollout: {}".format(rollout)
+    assert (SampleBatch.VF_PREDS in rollout or not use_critic), "use_critic=True but values not found, rollout: {}".format(rollout)
     assert use_critic or not use_gae, "Can't use gae without using a value function"
 
     if use_gae:
@@ -105,41 +89,30 @@ def compute_advantages(
         # This formula for the advantage comes from:
         # "Generalized Advantage Estimation": https://arxiv.org/abs/1506.02438
         rollout[Postprocessing.ADVANTAGES] = discount_cumsum(delta_t, gamma * lambda_)
-        rollout[Postprocessing.VALUE_TARGETS] = (
-            rollout[Postprocessing.ADVANTAGES] + rollout[SampleBatch.VF_PREDS]
-        ).astype(np.float32)
+        if tf.is_tensor(rollout[Postprocessing.ADVANTAGES]):
+            rollout[Postprocessing.ADVANTAGES] = rollout[Postprocessing.ADVANTAGES].numpy()
+        if tf.is_tensor(rollout[SampleBatch.VF_PREDS]):
+            rollout[SampleBatch.VF_PREDS] = rollout[SampleBatch.VF_PREDS].numpy()
+
+        rollout[Postprocessing.VALUE_TARGETS] = (rollout[Postprocessing.ADVANTAGES] + rollout[SampleBatch.VF_PREDS]).astype(np.float32)
     else:
-        rewards_plus_v = np.concatenate(
-            [rollout[SampleBatch.REWARDS], np.array([last_r])]
-        )
-        discounted_returns = discount_cumsum(rewards_plus_v, gamma)[:-1].astype(
-            np.float32
-        )
+        rewards_plus_v = np.concatenate([rollout[SampleBatch.REWARDS], np.array([last_r])])
+        discounted_returns = discount_cumsum(rewards_plus_v, gamma)[:-1].astype(np.float32)
 
         if use_critic:
-            rollout[Postprocessing.ADVANTAGES] = (
-                discounted_returns - rollout[SampleBatch.VF_PREDS]
-            )
+            rollout[Postprocessing.ADVANTAGES] = (discounted_returns - rollout[SampleBatch.VF_PREDS])
             rollout[Postprocessing.VALUE_TARGETS] = discounted_returns
         else:
             rollout[Postprocessing.ADVANTAGES] = discounted_returns
-            rollout[Postprocessing.VALUE_TARGETS] = np.zeros_like(
-                rollout[Postprocessing.ADVANTAGES]
-            )
+            rollout[Postprocessing.VALUE_TARGETS] = np.zeros_like(rollout[Postprocessing.ADVANTAGES])
 
-    rollout[Postprocessing.ADVANTAGES] = rollout[Postprocessing.ADVANTAGES].astype(
-        np.float32
-    )
+    rollout[Postprocessing.ADVANTAGES] = rollout[Postprocessing.ADVANTAGES].astype(np.float32)
 
     return rollout
 
 
-def compute_gae_for_sample_batch(
-    policy: Policy,
-    sample_batch: SampleBatch,
-    other_agent_batches: Optional[Dict[AgentID, SampleBatch]] = None,
-    episode: Optional[Episode] = None,
-) -> SampleBatch:
+def compute_gae_for_sample_batch(policy: Policy, sample_batch: SampleBatch, other_agent_batches: Optional[Dict[AgentID, SampleBatch]] = None,
+        episode: Optional[Episode] = None, ) -> SampleBatch:
     """Adds GAE (generalized advantage estimations) to a trajectory.
 
     The trajectory contains only data from one episode and from one agent.
@@ -164,7 +137,7 @@ def compute_gae_for_sample_batch(
     """
 
     # Trajectory is actually complete -> last r=0.0.
-    if isinstance(sample_batch[SampleBatch.DONES],dict) and sample_batch[SampleBatch.DONES]["__all__"]:
+    if isinstance(sample_batch[SampleBatch.DONES], dict) and sample_batch[SampleBatch.DONES]["__all__"]:
         last_r = 0.0
     # Trajectory has been truncated -> last r=VF estimate of last obs.
     else:
@@ -172,21 +145,13 @@ def compute_gae_for_sample_batch(
         # requirements. It's a single-timestep (last one in trajectory)
         # input_dict.
         # Create an input dict according to the Model's requirements.
-        input_dict = sample_batch.get_single_step_input_dict(
-            policy.model.view_requirements, index="last"
-        )
+        input_dict = sample_batch.get_single_step_input_dict(policy.model.view_requirements, index="last")
         last_r = policy._value(**input_dict)
 
     # Adds the policy logits, VF preds, and advantages to the batch,
     # using GAE ("generalized advantage estimation") or not.
-    batch = compute_advantages(
-        sample_batch,
-        last_r,
-        policy.config["gamma"],
-        policy.config["lambda"],
-        use_gae=policy.config["use_gae"],
-        use_critic=policy.config.get("use_critic", True),
-    )
+    batch = compute_advantages(sample_batch, last_r, policy.config["gamma"], policy.config["lambda"], use_gae=policy.config["use_gae"],
+        use_critic=policy.config.get("use_critic", True), )
 
     return batch
 

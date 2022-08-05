@@ -36,43 +36,42 @@ def minibatches(samples: SampleBatch, sgd_minibatch_size: int, shuffle: bool = T
     Yields:
         SampleBatch: Each of size `sgd_minibatch_size`.
     """
+    gouda = True
+
     if not sgd_minibatch_size:
         yield samples
         return
 
     if isinstance(samples, MultiAgentBatch):
-        raise NotImplementedError(
-            "Minibatching not implemented for multi-agent in simple mode"
-        )
+        raise NotImplementedError("Minibatching not implemented for multi-agent in simple mode")
 
     if "state_in_0" not in samples and "state_out_0" not in samples:
         samples.shuffle()
 
-    all_slices = samples._get_slice_indices(sgd_minibatch_size)
-    data_slices, state_slices = all_slices
+    if gouda:
+        slices = samples.multislice(sgd_minibatch_size)
+        for s in slices:
+            yield s
 
-    if len(state_slices) == 0:
-        if shuffle:
-            random.shuffle(data_slices)
-        for i, j in data_slices:
-            yield samples.slice(i, j)
     else:
-        all_slices = list(zip(data_slices, state_slices))
-        if shuffle:
-            # Make sure to shuffle data and states while linked together.
-            random.shuffle(all_slices)
-        for (i, j), (si, sj) in all_slices:
-            yield samples.slice(i, j, si, sj)
+        all_slices = samples._get_slice_indices(sgd_minibatch_size)
+        data_slices, state_slices = all_slices
+
+        if len(state_slices) == 0:
+            if shuffle:
+                random.shuffle(data_slices)
+            for i, j in data_slices:
+                yield samples.slice(i, j)
+        else:
+            all_slices = list(zip(data_slices, state_slices))
+            if shuffle:
+                # Make sure to shuffle data and states while linked together.
+                random.shuffle(all_slices)
+            for (i, j), (si, sj) in all_slices:
+                yield samples.slice(i, j, si, sj)
 
 
-def do_minibatch_sgd(
-    samples,
-    policies,
-    local_worker,
-    num_sgd_iter,
-    sgd_minibatch_size,
-    standardize_fields,
-):
+def do_minibatch_sgd(samples, policies, local_worker, num_sgd_iter, sgd_minibatch_size, standardize_fields, ):
     """Execute minibatch SGD.
 
     Args:
@@ -87,7 +86,6 @@ def do_minibatch_sgd(
     Returns:
         averaged info fetches over the last SGD epoch taken.
     """
-
     # Handle everything as if multi-agent.
     samples = samples.as_multi_agent()
 
@@ -108,24 +106,23 @@ def do_minibatch_sgd(
         # Check to make sure that the sgd_minibatch_size is not smaller
         # than max_seq_len otherwise this will cause indexing errors while
         # performing sgd when using a RNN or Attention model
-        if (
-            policy.is_recurrent()
-            and policy.config["model"]["max_seq_len"] > sgd_minibatch_size
-        ):
-            raise ValueError(
-                "`sgd_minibatch_size` ({}) cannot be smaller than"
-                "`max_seq_len` ({}).".format(
-                    sgd_minibatch_size, policy.config["model"]["max_seq_len"]
-                )
-            )
+        if (policy.is_recurrent() and policy.config["model"]["max_seq_len"] > sgd_minibatch_size):
+            raise ValueError("`sgd_minibatch_size` ({}) cannot be smaller than"
+                             "`max_seq_len` ({}).".format(sgd_minibatch_size, policy.config["model"]["max_seq_len"]))
 
+        logger.info(f"SGD: starting to iterate - num_sgd_iter={num_sgd_iter}, minibatch size: {sgd_minibatch_size}")
+        # miniLen = len(list(minibatches(batch, sgd_minibatch_size)))
+        # logger.info(f"will perform {miniLen} minibatches")
+        # envIds = np.unique(batch[SampleBatch.ENV_ID])
+        # logger.info(f"env_ids: {envIds}")
+        # for e in range(0, len(envIds)):
+        #     inds = np.squeeze(np.argwhere(batch[SampleBatch.ENV_ID] == envIds[e]))
+        #     agents = batch[SampleBatch.AGENT_INDEX]
+        #     logger.info(f"env_id: {e}, count of each agent: {np.bincount(agents[inds])}")
+        #     # logger.info(f"count of each agent: {np.bincount(batch[SampleBatch.AGENT_INDEX])}")
         for i in range(num_sgd_iter):
             for minibatch in minibatches(batch, sgd_minibatch_size):
-                results = (
-                    local_worker.learn_on_batch(
-                        MultiAgentBatch({policy_id: minibatch}, minibatch.count)
-                    )
-                )[policy_id]
+                results = (local_worker.learn_on_batch(MultiAgentBatch({policy_id: minibatch}, minibatch.count)))[policy_id]
                 learner_info_builder.add_learn_on_batch_results(results, policy_id)
 
     learner_info = learner_info_builder.finalize()

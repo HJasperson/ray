@@ -8,6 +8,8 @@ from ray.rllib.models.modelv2 import ModelV2
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.exploration.exploration import Exploration
 from ray.rllib.utils.exploration.random import Random
+from ray.rllib.utils.schedules import Schedule, PiecewiseSchedule
+from ray.rllib.utils.numpy import convert_to_numpy
 from ray.rllib.utils.framework import (
     get_variable,
     try_import_tf,
@@ -58,6 +60,21 @@ class StochasticSampling(Exploration):
             action_space, model=self.model, framework=self.framework, **kwargs
         )
 
+        # for parameter noise
+        initial_epsilon = 1.0
+        final_epsilon = 0.05
+        warmup_timesteps = 0
+        epsilon_timesteps = int(1e5)
+        self.epsilon_schedule = PiecewiseSchedule(
+            endpoints=[
+                (0, initial_epsilon),
+                (warmup_timesteps, initial_epsilon),
+                (warmup_timesteps + epsilon_timesteps, final_epsilon),
+            ],
+            outside_value=final_epsilon,
+            framework=self.framework,
+        )
+
         # The current timestep value (tf-var or python int).
         self.last_timestep = get_variable(
             np.array(0, np.int64),
@@ -65,6 +82,7 @@ class StochasticSampling(Exploration):
             tf_name="timestep",
             dtype=np.int64,
         )
+
 
     @override(Exploration)
     def get_exploration_action(
@@ -153,3 +171,24 @@ class StochasticSampling(Exploration):
             logp = torch.zeros_like(action_dist.sampled_action_logp())
 
         return action, logp
+
+    @override(Exploration)
+    def get_state(self, sess: Optional["tf.Session"] = None):
+        if sess:
+            return sess.run(self._tf_state_op)
+        eps = self.epsilon_schedule(self.last_timestep)
+        return {
+            "cur_epsilon": convert_to_numpy(eps) if self.framework != "tf" else eps,
+            "last_timestep": convert_to_numpy(self.last_timestep)
+            if self.framework != "tf"
+            else self.last_timestep,
+        }
+
+    @override(Exploration)
+    def set_state(self, state: dict, sess: Optional["tf.Session"] = None) -> None:
+        if self.framework == "tf":
+            self.last_timestep.load(state["last_timestep"], session=sess)
+        elif isinstance(self.last_timestep, int):
+            self.last_timestep = state["last_timestep"]
+        else:
+            self.last_timestep.assign(state["last_timestep"])

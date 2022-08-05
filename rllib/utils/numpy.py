@@ -501,7 +501,7 @@ def softmax(
     """
     epsilon = epsilon or SMALL_NUMBER
     # x_exp = np.maximum(np.exp(x), SMALL_NUMBER)
-    x_exp = np.exp(x)
+    x_exp = np.exp(x + SMALL_NUMBER)
     # return x_exp /
     #   np.maximum(np.sum(x_exp, axis, keepdims=True), SMALL_NUMBER)
     return np.maximum(x_exp / np.sum(x_exp, axis, keepdims=True), epsilon)

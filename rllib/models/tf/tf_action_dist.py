@@ -4,6 +4,7 @@ from math import log
 import numpy as np
 import tree  # pip install dm_tree
 from typing import Optional
+import logging
 
 from ray.rllib.models.action_dist import ActionDistribution
 from ray.rllib.models.modelv2 import ModelV2
@@ -15,6 +16,8 @@ from ray.rllib.utils.typing import TensorType, List, Union, Tuple, ModelConfigDi
 
 tf1, tf, tfv = try_import_tf()
 tfp = try_import_tfp()
+
+logger = logging.getLogger(__name__)
 
 
 @DeveloperAPI
@@ -52,7 +55,7 @@ class Categorical(TFActionDistribution):
     def __init__(
         self, inputs: List[TensorType], model: ModelV2 = None, temperature: float = 1.0
     ):
-        assert temperature > 0.0, "Categorical `temperature` must be > 0.0!"
+        # assert temperature > 0.0, "Categorical `temperature` must be > 0.0!"
         # Allow softmax formula w/ temperature != 1.0:
         # Divide inputs by temperature.
         super().__init__(inputs / temperature, model)
@@ -63,32 +66,24 @@ class Categorical(TFActionDistribution):
 
     @override(ActionDistribution)
     def logp(self, x: TensorType) -> TensorType:
-        return -tf.nn.sparse_softmax_cross_entropy_with_logits(
-            logits=self.inputs, labels=tf.cast(x, tf.int32)
-        )
+        logp = tf.math.log(tf.nn.softmax(self.inputs))
+        return tf.gather(logp, x, batch_dims=1)
 
     @override(ActionDistribution)
     def entropy(self) -> TensorType:
-        a0 = self.inputs - tf.reduce_max(self.inputs, axis=1, keepdims=True)
-        ea0 = tf.exp(a0)
-        z0 = tf.reduce_sum(ea0, axis=1, keepdims=True)
-        p0 = ea0 / z0
-        return tf.reduce_sum(p0 * (tf.math.log(z0) - a0), axis=1)
+        probs = tf.nn.softmax(self.inputs)
+        probs = tf.clip_by_value(probs, tf.keras.backend.epsilon(), 1.0)
+        return tf.reduce_sum(probs * tf.math.log(probs), axis=1)
 
     @override(ActionDistribution)
     def kl(self, other: ActionDistribution) -> TensorType:
-        a0 = self.inputs - tf.reduce_max(self.inputs, axis=1, keepdims=True)
-        a1 = other.inputs - tf.reduce_max(other.inputs, axis=1, keepdims=True)
-        ea0 = tf.exp(a0)
-        ea1 = tf.exp(a1)
-        z0 = tf.reduce_sum(ea0, axis=1, keepdims=True)
-        z1 = tf.reduce_sum(ea1, axis=1, keepdims=True)
-        p0 = ea0 / z0
-        return tf.reduce_sum(p0 * (a0 - tf.math.log(z0) - a1 + tf.math.log(z1)), axis=1)
+        probs = tf.nn.softmax(self.inputs)
+        probsOther = tf.nn.softmax(other.inputs)
+        return tf.keras.losses.kl_divergence(probs, probsOther)
 
     @override(TFActionDistribution)
     def _build_sample_op(self) -> TensorType:
-        logp = tf.math.log(tf.nn.softmax(tf.where(tf.not_equal(self.inputs,0), self.inputs, tf.float64.min)))
+        logp = tf.math.log(tf.nn.softmax(self.inputs))
         return tf.squeeze(tf.random.categorical(logp, 1), axis=1)
 
     @staticmethod
